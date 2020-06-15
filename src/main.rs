@@ -1,7 +1,9 @@
 use std::convert::TryInto;
 use std::fs::{File, OpenOptions};
+use std::io;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::time::{Duration, Instant};
+use std::process::exit;
 
 #[derive(Clone, Copy)]
 struct Stats {
@@ -22,7 +24,7 @@ impl Stats {
 fn output_progress(start: Instant, duration: Duration, stats: Stats) {
     let s = duration.as_secs() % 60;
     let m = duration.as_secs() / 60 % 60;
-    let h = duration.as_secs() / 3600 % 60;
+    let h = duration.as_secs() / 3600;
     let read = stats.count_ok + stats.count_bad;
     let to_read = stats.total - read;
     let percentage = 100.0 * read as f64 / stats.total as f64;
@@ -34,17 +36,16 @@ fn output_progress(start: Instant, duration: Duration, stats: Stats) {
     );
 }
 
-fn sync_block_dev(src: &mut File, dst: &mut File, blocksize: u32) {
-    let src_size = src.seek(SeekFrom::End(0)).expect("error fetching source size");
-    let dst_size = dst.seek(SeekFrom::End(0)).expect("error fetching destination size");
+fn sync_block_dev(src: &mut File, dst: &mut File, blocksize: u32) -> io::Result<()> {
+    let src_size = src.seek(SeekFrom::End(0))?;
+    let dst_size = dst.seek(SeekFrom::End(0))?;
 
     if src_size > dst_size {
-        dst.set_len(src_size)
-            .expect("error growing destination file");
+        dst.set_len(src_size)?;
     }
 
-    src.seek(SeekFrom::Start(0)).expect("error seeking to start");
-    dst.seek(SeekFrom::Start(0)).expect("error seeking to start");
+    src.seek(SeekFrom::Start(0))?;
+    dst.seek(SeekFrom::Start(0))?;
 
     let mut src_buf = vec![0; blocksize.try_into().unwrap()];
     let mut dst_buf = vec![0; blocksize.try_into().unwrap()];
@@ -61,16 +62,14 @@ fn sync_block_dev(src: &mut File, dst: &mut File, blocksize: u32) {
             dst_buf.truncate(to_read.try_into().unwrap());
         }
 
-        src.read_exact(&mut src_buf).expect("error reading source file");
-        dst.read_exact(&mut dst_buf).expect("error reading destination file");
+        src.read_exact(&mut src_buf)?;
+        dst.read_exact(&mut dst_buf)?;
 
         if src_buf == dst_buf {
             stats.count_ok += 1;
         } else {
-            dst.seek(SeekFrom::Current(-i64::from(blocksize)))
-                .expect("error seeking in destination file");
-            dst.write_all(&src_buf)
-                .expect("error writing to destination file");
+            dst.seek(SeekFrom::Current(-i64::from(blocksize)))?;
+            dst.write_all(&src_buf)?;
             stats.count_bad += 1;
         }
 
@@ -83,6 +82,8 @@ fn sync_block_dev(src: &mut File, dst: &mut File, blocksize: u32) {
     }
 
     output_progress(time_start, time_start.elapsed(), stats);
+
+    Ok(())
 }
 
 fn main() {
@@ -107,5 +108,8 @@ fn main() {
         .open(dst_filename)
         .expect("error opening destination file");
 
-    sync_block_dev(&mut src, &mut dst, blocksize);
+    sync_block_dev(&mut src, &mut dst, blocksize).unwrap_or_else(|err| {
+        eprintln!("error: {}", err);
+        exit(1);
+    });
 }
